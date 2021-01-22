@@ -62,6 +62,7 @@ typedef struct ChatRoom{
 typedef struct TrieNode{
     char ch;
     bool is_word;
+    bool is_leaf_node;
     struct TrieNode* child[TRIE_MAX_CHILD];
     chat_room_t* room;
 }trie_node_t;
@@ -192,7 +193,6 @@ static int validate_join(const char* buff, user_t *user_info)
         return -1;
     }
 
-    printf("sscanf returned %d\n", ret);
     int user_name_len = strnlen(user_name, MAX_USERNAME_LEN);
     int room_name_len = strnlen(room_name, MAX_ROOMNAME_LEN);
 
@@ -224,7 +224,6 @@ static int validate_join(const char* buff, user_t *user_info)
     return 0;
 }
 
-
 static chat_room_t* search_room(const char* room_name)
 {
     trie_node_t* itr = trie_root;
@@ -247,32 +246,97 @@ static chat_room_t* search_room(const char* room_name)
     return NULL;
 }
 
-static chat_room_t* create_room(const char* room_name){
+static int remove_from_trie(char* room_name, trie_node_t* itr, int len, int i)
+{
+    if(!itr){
+        return 0;
+    }
+
+    printf("room name is %s and len is %d\n",room_name, len);
+
+    if(!(itr->child[toascii(room_name[i])])){
+        printf("char %c  at %d is nULL\n", room_name[i], i);
+        return 0;
+
+    } else {
+
+        trie_node_t* child = itr->child[toascii(room_name[i])];
+        printf("char %c at %d and ptr is %p\n", room_name[i], i, child);
+        if(child->is_word && i == (len -1)){
+
+            if(child->is_leaf_node){
+                printf("char %c is leaf, deleting\n", room_name[i]);
+                free(child);
+                return 1;
+            } else {
+                return 0;
+            }
+        }
+    }
+
+    itr = itr->child[toascii(room_name[i])];
+
+    int should_delete = remove_from_trie(room_name, itr, len, i+1);
+
+    if(should_delete){
+        if(!(itr->is_word) && trie_root != itr){
+            printf("char %c at %p deleting\n", room_name[i], itr);
+            free(itr);
+            return 1;
+        } else {
+            itr->is_leaf_node = true;
+        }
+    }
+
+    return 0;
+}
+
+static int delete_room(chat_room_t* room)
+{
+    if(!room || room->num_people != 0){
+        printf("Error deleting room\n");
+        return -EINVAL;
+    }
+
+    printf("traversing trie\n");
+    remove_from_trie(room->room_name, trie_root, strlen(room->room_name), 0);
+
+    if(pthread_mutex_destroy(&room->lock) < 0){
+        printf("Error destroying room mutex\n");
+        return -1;
+    }
+
+    free(room->room_name);
+    free(room);
+}
+
+static chat_room_t* create_room(const char* room_name)
+{
 
     trie_node_t* itr = trie_root;
+    printf("trie root is %p\n", itr);
 
     if(!room_name || strchr(room_name, MSG_DELIMETER) || strchr(room_name, ' ')){
         return NULL;
     }
 
-    for(int i = 0; i < strnlen(room_name, MAX_ROOMNAME_LEN); i++){
+    int i = 0;
+    int j = 0;
+    while(i < strnlen(room_name, MAX_ROOMNAME_LEN)){
 
         // char lower_ch = tolower(room_name[i]);
 
-        int j = toascii(room_name[i]);
+        j = toascii(room_name[i]);
 
+        printf("trie itr for char %c at %d\n", room_name[i], i);
         if(!(itr->child[j])){
 
-            // printf("char is %c, creating trie node", lower_ch);
-            //new char
             trie_node_t* new_node = init_trie_node();
 
             if(!new_node){
                 printf("no memory for trie node\n");
                 return NULL;
             }
-
-            // new_node->ch = lower_ch;
 
             itr->child[j] = new_node;
 
@@ -283,9 +347,14 @@ static chat_room_t* create_room(const char* room_name){
             printf("child is empty");
             exit(-1);
         }
-        itr = itr->child[j];
-    }
 
+        if(i < strnlen(room_name, MAX_ROOMNAME_LEN)){
+            itr = itr->child[j];
+            i++;
+        }
+
+        printf("itr is %p\n", itr);
+    }
 
     if(!itr){
         printf("error");
@@ -313,7 +382,23 @@ static chat_room_t* create_room(const char* room_name){
         exit(-err);
     }
 
-    printf("room %s created\n", room_name);
+    itr->room->room_name = (char*)malloc(sizeof(char)*(strlen(room_name)+1));
+
+    if(!(itr->room->room_name)){
+        printf("Malloc failed for create room");
+        return NULL;
+    }
+
+    strncpy(itr->room->room_name, room_name, strlen(room_name));
+
+    itr->room->room_name[strlen(room_name)] = '\0';
+
+    printf("room %s created\n", itr->room->room_name);
+
+    printf("c is at %p\n", trie_root->child[(int)'c']);
+    printf("is word true for %p\n", itr);
+    itr->is_word = true;
+    itr->is_leaf_node = true;
 
     return itr->room;
 }
@@ -436,7 +521,7 @@ static int remove_user(user_t* user_info, chat_room_t* room)
     }
 
     if(i < room->num_people){
-        for(int j = i; j < room->num_people; j++){
+        for(int j = i; j < room->num_people-1; j++){
             room->user_fds->data[j] = room->user_fds->data[j+1];
         }
     } else {
@@ -448,6 +533,7 @@ static int remove_user(user_t* user_info, chat_room_t* room)
 
     if(room->num_people == 0){
         printf("delete room\n");
+        delete_room(room);
     }
 
     if((err = pthread_mutex_unlock(&room->lock)) != 0){
