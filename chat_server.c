@@ -18,15 +18,15 @@
 
 
 #define DEFAULT_PORT (1234)
-#define TRIE_MAX_CHILD (26)
+#define TRIE_MAX_CHILD (128)
 #define HOSTLEN (256)
 #define SERVLEN (8)
 
-// since strnlen is used if ret val is 20001 then send error
+// since strnlen is used if ret val is max_len + 1 then send error
 #define MAX_BUFF_LEN (20001)
+#define MAX_USERNAME_LEN (21)
+#define MAX_ROOMNAME_LEN (21)
 
-#define MAX_USERNAME_LEN (20)
-#define MAX_ROOMNAME_LEN (20)
 #define MSG_DELIMETER ('\n')
 #define INIT_ARR_CAP (1000)
 
@@ -70,6 +70,7 @@ typedef struct TrieNode{
 static trie_node_t *trie_root;
 static pthread_mutex_t trie_lock;
 
+// static const char delim_buff[] = "\n";
 static const char hello_buff[] = "Hello from server\n";
 static const char error_buff[] = "ERROR\n";
 static const char join_buff[] = "has joined\n";
@@ -185,12 +186,19 @@ static int validate_join(const char* buff, user_t *user_info)
     char room_name[MAX_ROOMNAME_LEN];
     memset(room_name, 0 , MAX_ROOMNAME_LEN);
 
-    if (sscanf(buff, "JOIN %s %s", room_name, user_name) != 2) {
+    int ret;
+    if ((ret = sscanf(buff, "JOIN %s %s", room_name, user_name)) != 2) {
+        printf(" sscanf returned %d\n", ret);
         return -1;
     }
 
+    printf("sscanf returned %d\n", ret);
     int user_name_len = strnlen(user_name, MAX_USERNAME_LEN);
     int room_name_len = strnlen(room_name, MAX_ROOMNAME_LEN);
+
+    if(user_name_len == MAX_USERNAME_LEN || room_name_len == MAX_USERNAME_LEN){
+        return -1;
+    }
 
     user_info->user_name = (char*)malloc(user_name_len+1*sizeof(char));
 
@@ -223,9 +231,7 @@ static chat_room_t* search_room(const char* room_name)
 
     for(int i = 0; i < strnlen(room_name, MAX_ROOMNAME_LEN); i++){
 
-        char lower_ch = tolower(room_name[i]);
-
-        int j = lower_ch - 'a';
+        int j = toascii(room_name[i]);
 
         if(!(itr->child[j])){
             return NULL;
@@ -245,11 +251,15 @@ static chat_room_t* create_room(const char* room_name){
 
     trie_node_t* itr = trie_root;
 
+    if(!room_name || strchr(room_name, MSG_DELIMETER) || strchr(room_name, ' ')){
+        return NULL;
+    }
+
     for(int i = 0; i < strnlen(room_name, MAX_ROOMNAME_LEN); i++){
 
-        char lower_ch = tolower(room_name[i]);
+        // char lower_ch = tolower(room_name[i]);
 
-        int j = lower_ch - 'a';
+        int j = toascii(room_name[i]);
 
         if(!(itr->child[j])){
 
@@ -262,7 +272,7 @@ static chat_room_t* create_room(const char* room_name){
                 return NULL;
             }
 
-            new_node->ch = lower_ch;
+            // new_node->ch = lower_ch;
 
             itr->child[j] = new_node;
 
@@ -303,7 +313,7 @@ static chat_room_t* create_room(const char* room_name){
         exit(-err);
     }
 
-    printf("room created\n");
+    printf("room %s created\n", room_name);
 
     return itr->room;
 }
@@ -368,12 +378,20 @@ static char* read_wrapper(int fd, void* buff, bool init, user_t* user_info,
         buff += n;
     }
 
-    // if(remainder <= 0){
-    //     //max line limit exceeded, consider it as a malformed request
-    //     return NULL;
-    // }
+    return NULL;
+}
 
-    return NULL;           /* Return >= 0 */
+static int client_error(int fd)
+{
+    if(write(fd, error_buff, strlen(error_buff)) < 0){
+        perror("error in write");
+        return -errno;
+    }
+
+    if(close(fd) < 0){
+        perror("error in close");
+        return -errno;
+    }
 }
 
 static int broadcast_msg(chat_room_t* room, const char* msg)
@@ -490,9 +508,12 @@ void *client_serve(void* arg)
 
                 strncpy(user_name_temp, user_info->user_name, MAX_USERNAME_LEN);
 
+                if(client_error(*clientfd) < 0){
+                    printf("Irony: Error sending error msg to client\n");
+                }
+
                 if(remove_user(user_info, room) < 0){
                     printf("Terminal Irony: error removing user\n");
-                    return NULL;
                 }
 
                 snprintf(out_buff, MAX_BUFF_LEN, "%s %s\n", user_name_temp,
@@ -503,21 +524,10 @@ void *client_serve(void* arg)
                             " left\n", user_name_temp);
                 }
 
-                return NULL;
-
             } else {
-
                 printf("error in new client req, closing connection\n");
-                if(write(*clientfd, error_buff, strlen(error_buff)) < 0){
-                    perror("error in write");
-                    free(user_info);
-                    return NULL;
-                }
-
-                if(close(*clientfd) < 0){
-                    perror("error in close");
-                    free(user_info);
-                    return NULL;
+                if(client_error(*clientfd) < 0){
+                    printf("Irony: Error sending error msg to client\n");
                 }
             }
             return NULL;
@@ -529,7 +539,10 @@ void *client_serve(void* arg)
 
             if((err = pthread_mutex_lock(&trie_lock)) != 0){
                 printf("Error locking trie mutex : %s", strerror(err));
-
+                if(client_error(*clientfd) < 0){
+                    printf("Irony: Error sending error msg to client\n");
+                }
+                free(user_info);
                 return NULL;
             }
 
@@ -537,7 +550,10 @@ void *client_serve(void* arg)
 
             if((err = pthread_mutex_unlock(&trie_lock)) != 0){
                 printf("Error unlocking trie mutex : %s", strerror(err));
-    
+                if(client_error(*clientfd) < 0){
+                    printf("Irony: Error sending error msg to client\n");
+                }
+                free(user_info);
                 return NULL;
             }
 
@@ -546,16 +562,33 @@ void *client_serve(void* arg)
 
                 if((err = pthread_mutex_lock(&trie_lock)) != 0){
                     printf("Error locking trie mutex : %s", strerror(err));
-
+                    if(client_error(*clientfd) < 0){
+                        printf("Irony: Error sending error msg to client\n");
+                    }
+                    free(user_info);
                     return NULL;
                 }
 
                 room = create_room(user_info->room_name);
 
-                //TODO create room can return NULL
+                if(!room){
+                    if(remove_user(user_info, room) < 0){
+                        printf("Terminal Irony: error removing user\n");
+                    }
+                    if(client_error(*clientfd) < 0){
+                        printf("Irony: Error sending error msg to client\n");
+                    }
+                    return NULL;
+                }
+
                 if((err = pthread_mutex_unlock(&trie_lock)) != 0){
                     printf("Error unlocking trie mutex : %s", strerror(err));
-
+                    if(client_error(*clientfd) < 0){
+                        printf("Irony: Error sending error msg to client\n");
+                    }
+                    if(remove_user(user_info, room) < 0){
+                        printf("Terminal Irony: error removing user\n");
+                    }
                     return NULL;
                 }
             }
@@ -563,13 +596,23 @@ void *client_serve(void* arg)
             //lock room
             if((err = pthread_mutex_lock(&room->lock)) != 0){
                 printf("Error locking room mutex : %s", strerror(err));
-
+                if(client_error(*clientfd) < 0){
+                    printf("Irony: Error sending error msg to client\n");
+                }
+                if(remove_user(user_info, room) < 0){
+                    printf("Terminal Irony: error removing user\n");
+                }
                 return NULL;
             }
 
             if(insert_into_rs_array(&room->user_fds, *clientfd) < 0){
                 printf("Error adding user fd\n");
-                free(user_info);
+                if(client_error(*clientfd) < 0){
+                    printf("Irony: Error sending error msg to client\n");
+                }
+                if(remove_user(user_info, room) < 0){
+                    printf("Terminal Irony: error removing user\n");
+                }
                 return NULL;
             }
 
@@ -578,6 +621,12 @@ void *client_serve(void* arg)
             if((err = pthread_mutex_unlock(&room->lock)) != 0){
                 printf("Error unlocking trie mutex : %s", strerror(err));
 
+                if(client_error(*clientfd) < 0){
+                    printf("Irony: Error sending error msg to client\n");
+                }
+                if(remove_user(user_info, room) < 0){
+                    printf("Terminal Irony: error removing user\n");
+                }
                 return NULL;
             }
 
@@ -588,6 +637,9 @@ void *client_serve(void* arg)
 
             if(broadcast_msg(room, out_buff) < 0){
 
+                if(client_error(*clientfd) < 0){
+                    printf("Irony: Error sending error msg to client\n");
+                }
                 if(remove_user(user_info, room) < 0){
                     printf("Terminal Irony: error removing user\n");
                 }
@@ -598,27 +650,28 @@ void *client_serve(void* arg)
                                 // userful in case of merged packets.
         }
 
-        char* delim = "\n";
-        packet_start = strtok(packet_start, delim);
+        packet_start = strtok(packet_start, "\n");
         printf("broadcasting msg %s\n",in_buff);
         while(packet_start != NULL){
 
             printf("sending %s to users in room %s len is %ld\n", packet_start,
                     user_info->room_name, strnlen(packet_start, MAX_BUFF_LEN));
 
-
             snprintf(out_buff, MAX_BUFF_LEN, "%s: %s\n", user_info->user_name,
                         packet_start);
-    
+
 
             if(broadcast_msg(room, out_buff) < 0){
 
+                if(client_error(*clientfd) < 0){
+                    printf("Irony: Error sending error msg to client\n");
+                }
                 if(remove_user(user_info, room) < 0){
                     printf("Terminal Irony: error removing user\n");
                 }
                 return NULL;
             }
-            packet_start = strtok(NULL, delim);
+            packet_start = strtok(NULL, "\n");
         }
     }
 }
