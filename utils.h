@@ -31,13 +31,12 @@ typedef struct ChatRoom{
 }chat_room_t;
 
 /**
- * @brief trie node, each node contains one character and 26 child pointers.
+ * @brief trie node, each node contains one character and 128 child pointers.
  * Also contains a pointer to a room.
  * 
  */
 //@{
 typedef struct TrieNode{
-    char ch;
     bool is_word;
     struct TrieNode* child[TRIE_MAX_CHILD];
     chat_room_t* room;

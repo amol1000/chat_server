@@ -62,12 +62,14 @@ void usage()
     printf(" Usage: ./chat_server <optional-port-number>");
 }
 
-void terminate()
-{
-    destroy_trie();
-    exit(-1);
-}
 
+/**
+ * @brief fills in the use
+ * 
+ * @param buff 
+ * @param user_info 
+ * @return int 
+ */
 static int validate_join(const char* buff, user_t *user_info)
 {
     if(!user_info){
@@ -86,8 +88,9 @@ static int validate_join(const char* buff, user_t *user_info)
 
     int ret;
 
-    if ((ret = sscanf(buff, "%s %s %s[^\n]", join_str, room_name, user_name)) != 3) {
-        printf(" sscanf returned %d\n", ret);
+    if ((ret = sscanf(buff, "%s %s %s", join_str, room_name, user_name))
+                 != 3) {
+        printf("malformed request\n");
         return -1;
     }
 
@@ -105,8 +108,6 @@ static int validate_join(const char* buff, user_t *user_info)
         printf("malformed request\n");
         return -1;
     }
-
-    printf("user is %s and room is %s\n", user_name, room_name);
 
     user_info->user_name = (char*)malloc(user_name_len+1*sizeof(char));
 
@@ -163,7 +164,6 @@ static char* read_wrapper(int fd, void* buff, bool init, user_t* user_info)
         }
 
         if(n == 0){
-            printf("socket closed?\n");
             return NULL;
         }
 
@@ -574,12 +574,6 @@ int main(int argc, char *argv[])
         printf("Out of memory for trie");
         exit(-ENOMEM);
     }
-
-    /* Sigpipe should be ignored*/ 
-    signal(SIGPIPE, SIG_IGN);
-    signal(SIGABRT, terminate);
-    signal(SIGTERM, terminate);
-    signal(SIGINT, terminate);
 
     while(true){
 
